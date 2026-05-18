@@ -271,11 +271,16 @@ async function handleStream(
     // of the previous one, abort. Without this, a provider that stalls after
     // first token holds the gateway connection open indefinitely.
     while (true) {
-      const idleTimer = new Promise<{ idle: true }>((resolve) =>
+      type IdleResult = { idle: true };
+      type ChunkResult = { idle: false; r: IteratorResult<any> };
+      const idleTimer = new Promise<IdleResult>((resolve) =>
         setTimeout(() => resolve({ idle: true }), config.STREAM_IDLE_TIMEOUT_MS),
       );
-      const next = iterator.next().then((r) => ({ idle: false as const, r }));
-      const winner = await Promise.race([next, idleTimer]);
+      const next: Promise<ChunkResult> = iterator.next().then((r: IteratorResult<any>) => ({
+        idle: false,
+        r,
+      }));
+      const winner = await Promise.race<IdleResult | ChunkResult>([next, idleTimer]);
 
       if (winner.idle) {
         const err: any = new Error(
