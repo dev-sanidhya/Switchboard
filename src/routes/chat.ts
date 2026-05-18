@@ -9,6 +9,7 @@ import { withRetry } from "../resilience/retry.js";
 import { recordSuccess, recordFailure } from "../resilience/circuit-breaker.js";
 import { isCacheable, cacheKey, getCached, setCached } from "../cache/response-cache.js";
 import { estimateCost, MODEL_REGISTRY } from "../providers/types.js";
+import { config } from "../config/index.js";
 import { generateTraceId } from "../observability/tracer.js";
 import { requestLogger } from "../observability/logger.js";
 import { logRequest } from "../observability/request-log.js";
@@ -264,8 +265,29 @@ async function handleStream(
 
   try {
     const stream = adapter.stream({ ...body, model: route.model });
+    const iterator = stream[Symbol.asyncIterator]();
 
-    for await (const chunk of stream) {
+    // Inter-chunk watchdog: if no chunk arrives within STREAM_IDLE_TIMEOUT_MS
+    // of the previous one, abort. Without this, a provider that stalls after
+    // first token holds the gateway connection open indefinitely.
+    while (true) {
+      const idleTimer = new Promise<{ idle: true }>((resolve) =>
+        setTimeout(() => resolve({ idle: true }), config.STREAM_IDLE_TIMEOUT_MS),
+      );
+      const next = iterator.next().then((r) => ({ idle: false as const, r }));
+      const winner = await Promise.race([next, idleTimer]);
+
+      if (winner.idle) {
+        const err: any = new Error(
+          `Stream idle for ${config.STREAM_IDLE_TIMEOUT_MS}ms after ${tokensFlushed} tokens`,
+        );
+        err.code = "STREAM_IDLE_TIMEOUT";
+        throw err;
+      }
+
+      const { done, value: chunk } = winner.r;
+      if (done) break;
+
       if (ttfbMs === null) {
         ttfbMs = Date.now() - start;
       }

@@ -22,6 +22,10 @@ const schema = z.object({
 
   REQUEST_TIMEOUT_MS: z.coerce.number().default(30000),
   STREAM_FIRST_TOKEN_TIMEOUT_MS: z.coerce.number().default(5000),
+  // Watchdog between SSE chunks: if no chunk arrives within this many ms after
+  // the previous one, the gateway aborts the stream. Prevents indefinite stalls
+  // after first token (provider hang mid-response).
+  STREAM_IDLE_TIMEOUT_MS: z.coerce.number().default(10000),
 
   ENABLE_TEST_ENDPOINTS: z
     .string()
