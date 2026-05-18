@@ -127,6 +127,8 @@ export async function getCircuitStates(): Promise<Record<string, CBState>> {
 }
 
 export async function resetCircuit(provider: string) {
+  // Clear in-memory first so getOrCreate re-reads from (clean) DB
+  delete inMemory[provider];
   const entry = await getOrCreate(provider);
   entry.state = "closed";
   entry.failureCount = 0;
@@ -134,4 +136,16 @@ export async function resetCircuit(provider: string) {
   entry.openedAt = null;
   await persist(provider, entry);
   logger.info({ provider, event: "circuit_reset" }, "Circuit breaker manually reset");
+}
+
+// Used in tests after clearDb() to prevent stale in-memory state from being used
+// against DB rows that no longer exist.
+export function clearInMemoryState(provider?: string) {
+  if (provider) {
+    delete inMemory[provider];
+  } else {
+    for (const key of Object.keys(inMemory)) {
+      delete inMemory[key];
+    }
+  }
 }

@@ -185,8 +185,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       log.error({ provider: route.provider, error: err.message, status }, "Request failed");
 
-      const httpCode =
-        err?.statusCode >= 400 && err?.statusCode < 500 ? err.statusCode : 502;
+      // Only pass 400 (bad request) back to the client - it means the request itself
+      // was malformed. 401/403/404 from a provider means gateway config is broken
+      // (wrong API key, model not found) - that's our problem, not the tenant's.
+      const httpCode = err?.statusCode === 400 ? 400 : 502;
       return reply
         .code(httpCode)
         .send({ error: err.message ?? "Upstream provider error", trace_id: traceId });
