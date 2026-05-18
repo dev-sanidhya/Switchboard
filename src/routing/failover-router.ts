@@ -10,12 +10,13 @@ import { listProviders } from "../providers/registry.js";
 const PROVIDER_PRIORITY = ["groq", "cerebras", "gemini"];
 
 export class FailoverRouter implements Router {
-  async route(req: ChatRequest, limits: TenantLimits): Promise<RouteResult> {
+  async route(req: ChatRequest, limits: TenantLimits): Promise<RouteResult[]> {
     const allowedProviders = limits.allowedProviders
       ? (JSON.parse(limits.allowedProviders) as string[])
       : listProviders();
 
     const ordered = PROVIDER_PRIORITY.filter((p) => allowedProviders.includes(p));
+    const results: RouteResult[] = [];
 
     for (const provider of ordered) {
       const circuitOpen = await isOpen(provider);
@@ -27,9 +28,12 @@ export class FailoverRouter implements Router {
         return tierRank[b.tier] - tierRank[a.tier];
       })[0];
 
-      if (spec) return { provider, model: spec.modelId };
+      if (spec) results.push({ provider, model: spec.modelId });
     }
 
-    throw new Error("All providers are unavailable (circuits open or not allowed)");
+    if (results.length === 0) {
+      throw new Error("All providers are unavailable (circuits open or not allowed)");
+    }
+    return results;
   }
 }

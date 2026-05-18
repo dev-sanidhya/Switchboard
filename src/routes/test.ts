@@ -7,7 +7,7 @@ import type { FailureMode } from "../providers/mock.js";
 
 const injectSchema = z.object({
   provider: z.string(),
-  mode: z.enum(["error_500", "timeout", "slow_response", "rate_limited", "reset"]),
+  mode: z.enum(["error_500", "timeout", "slow_response", "rate_limited", "success", "reset"]),
 });
 
 // Test endpoints are only available when ENABLE_TEST_ENDPOINTS=true.

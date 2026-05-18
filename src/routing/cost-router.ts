@@ -8,7 +8,7 @@ import { listProviders } from "../providers/registry.js";
 const ABSTRACT_TIERS = new Set(["cheap", "balanced", "best"]);
 
 export class CostRouter implements Router {
-  async route(req: ChatRequest, limits: TenantLimits): Promise<RouteResult> {
+  async route(req: ChatRequest, limits: TenantLimits): Promise<RouteResult[]> {
     const allowedProviders = limits.allowedProviders
       ? (JSON.parse(limits.allowedProviders) as string[])
       : listProviders();
@@ -38,13 +38,23 @@ export class CostRouter implements Router {
       const tierCandidates = candidates.filter((s) => s.tier === req.model);
       if (tierCandidates.length > 0) candidates = tierCandidates;
     } else {
-      // Client sent a concrete model name - find its spec
+      // Client sent a concrete model name - find its spec and prefer it,
+      // but still build a fallback list of equivalent-tier models on other providers.
       const exact = candidates.find((s) => s.modelId === req.model);
-      if (exact) return { provider: exact.provider, model: exact.modelId };
+      if (exact) {
+        const sameTier = candidates.filter(
+          (c) => c.tier === exact.tier && c.modelId !== exact.modelId,
+        );
+        const ordered: RouteResult[] = [
+          { provider: exact.provider, model: exact.modelId },
+          ...sameTier.map((c) => ({ provider: c.provider, model: c.modelId })),
+        ];
+        return await filterHealthy(ordered);
+      }
       // Model not in registry or not allowed - fall through to cheapest available
     }
 
-    // Sort by estimated cost, then remove any whose circuit breaker is open
+    // Sort by estimated cost ascending, drop any whose circuit breaker is open.
     const withCost = await Promise.all(
       candidates.map(async (spec) => ({
         spec,
@@ -60,8 +70,15 @@ export class CostRouter implements Router {
     }
 
     healthy.sort((a, b) => a.cost - b.cost);
-    const winner = healthy[0].spec;
-
-    return { provider: winner.provider, model: winner.modelId };
+    return healthy.map((h) => ({ provider: h.spec.provider, model: h.spec.modelId }));
   }
+}
+
+async function filterHealthy(candidates: RouteResult[]): Promise<RouteResult[]> {
+  const checks = await Promise.all(candidates.map((c) => isOpen(c.provider)));
+  const result = candidates.filter((_, i) => !checks[i]);
+  if (result.length === 0) {
+    throw new Error("All eligible providers have open circuit breakers");
+  }
+  return result;
 }

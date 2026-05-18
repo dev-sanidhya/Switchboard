@@ -152,6 +152,21 @@ describe("failover routing", () => {
     // The key assertion: request was attempted (not immediately 503 due to only groq being requested)
     expect(res.statusCode).not.toBe(503);
   });
+
+  it("same-request failover: groq 500 -> cerebras success on the SAME request", async () => {
+    // Codex regression: previously, withRetry retried only the same adapter.
+    // A 5xx from groq returned 502 to the client even though cerebras was healthy.
+    // Now the route handler walks the candidate list within a single request.
+    getMockAdapter("groq").setMode("error_500");
+    getMockAdapter("cerebras").setMode("success"); // mock active, returns canned response
+
+    const res = await chat();
+
+    // Failover should succeed: response is 200 from cerebras mock
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.provider).toBe("cerebras");
+  });
 });
 
 async function recordManualFailure(provider: string) {

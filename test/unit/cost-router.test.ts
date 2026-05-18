@@ -34,33 +34,33 @@ beforeEach(async () => {
 });
 
 describe("cost router", () => {
-  it("routes 'cheap' tier to cheapest available model (Groq llama-3.1-8b)", async () => {
-    const result = await router.route(
+  it("routes 'cheap' tier to cheapest available model (Groq llama-3.1-8b) as first candidate", async () => {
+    const candidates = await router.route(
       { model: "cheap", messages: [{ role: "user", content: "hi" }] },
       makeLimits()
     );
-    expect(result.provider).toBe("groq");
-    expect(result.model).toBe("llama-3.1-8b-instant");
+    expect(candidates[0].provider).toBe("groq");
+    expect(candidates[0].model).toBe("llama-3.1-8b-instant");
   });
 
-  it("routes concrete model name directly without cost comparison", async () => {
-    const result = await router.route(
+  it("returns the exact model first when client sends a concrete model name", async () => {
+    const candidates = await router.route(
       { model: "llama3.1-8b", messages: [{ role: "user", content: "hi" }] },
       makeLimits()
     );
-    expect(result.provider).toBe("cerebras");
-    expect(result.model).toBe("llama3.1-8b");
+    expect(candidates[0].provider).toBe("cerebras");
+    expect(candidates[0].model).toBe("llama3.1-8b");
   });
 
   it("respects allowedProviders - skips providers not in list", async () => {
     const limits = makeLimits({
       allowedProviders: JSON.stringify(["cerebras"]),
     });
-    const result = await router.route(
+    const candidates = await router.route(
       { model: "cheap", messages: [{ role: "user", content: "hi" }] },
       limits
     );
-    expect(result.provider).toBe("cerebras");
+    expect(candidates[0].provider).toBe("cerebras");
   });
 
   it("skips provider with open circuit breaker", async () => {
@@ -71,12 +71,12 @@ describe("cost router", () => {
     await recordFailure("groq");
     await recordFailure("groq"); // threshold = 3
 
-    const result = await router.route(
+    const candidates = await router.route(
       { model: "cheap", messages: [{ role: "user", content: "hi" }] },
       makeLimits()
     );
     // Should fall over to Cerebras cheap tier
-    expect(result.provider).toBe("cerebras");
+    expect(candidates[0].provider).toBe("cerebras");
   });
 
   it("throws when all circuits are open and no eligible provider", async () => {

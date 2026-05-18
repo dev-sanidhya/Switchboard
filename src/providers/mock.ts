@@ -1,6 +1,12 @@
 import type { ProviderAdapter, ChatRequest, ChatResponse, StreamChunk } from "./types.js";
 
-export type FailureMode = "error_500" | "timeout" | "slow_response" | "rate_limited" | "reset";
+export type FailureMode =
+  | "error_500"
+  | "timeout"
+  | "slow_response"
+  | "rate_limited"
+  | "success" // mock is active but returns the canned success response (useful for failover tests)
+  | "reset";
 
 export class MockAdapter implements ProviderAdapter {
   name: string;

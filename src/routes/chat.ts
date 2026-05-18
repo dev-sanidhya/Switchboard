@@ -95,11 +95,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Route the request
+    // Route the request - returns ordered candidates for same-request failover
     const router = getRouter(ctx.limits.routingPolicy);
-    let route;
+    let candidates;
     try {
-      route = await router.route(body, ctx.limits);
+      candidates = await router.route(body, ctx.limits);
     } catch (err) {
       log.error({ event: "routing_failed", error: String(err) }, "No eligible provider");
       await logRequest({
@@ -109,96 +109,131 @@ export async function chatRoutes(fastify: FastifyInstance) {
       return reply.code(503).send({ error: "No eligible provider available", trace_id: traceId });
     }
 
-    const adapter = getAdapter(route.provider);
     const start = Date.now();
 
     if (body.stream) {
+      // Streaming uses only the first candidate. Same-request failover during
+      // a stream would require buffering and replaying SSE chunks; for now we
+      // rely on circuit-breaker-driven failover on the next request.
+      const route = candidates[0];
+      const adapter = getAdapter(route.provider);
       return handleStream(req, reply, { body, route, adapter, ctx, traceId, log, start });
     }
 
-    // Non-streaming path
-    try {
-      const response = await withRetry(
-        () => adapter.complete({ ...body, model: route.model }),
-        { provider: route.provider, traceId }
-      );
+    // Non-streaming path: walk candidates, fail over on 5xx/network/timeout.
+    let lastErr: any;
+    let lastRoute = candidates[0];
+    for (let i = 0; i < candidates.length; i++) {
+      const route = candidates[i];
+      lastRoute = route;
+      const adapter = getAdapter(route.provider);
+      const attemptStart = Date.now();
 
-      await recordSuccess(route.provider);
+      try {
+        const response = await withRetry(
+          () => adapter.complete({ ...body, model: route.model }),
+          { provider: route.provider, traceId }
+        );
 
-      const latencyMs = Date.now() - start;
-      const spec = MODEL_REGISTRY.find(
-        (s) => s.provider === route.provider && s.modelId === route.model
-      );
-      const costUsd = spec
-        ? estimateCost(spec, response.usage.prompt_tokens, response.usage.completion_tokens)
-        : 0;
+        await recordSuccess(route.provider);
 
-      // Atomically deduct budget. Log warning if concurrent requests raced the cap.
-      if (costUsd > 0) {
-        const { overBudget } = await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
-        if (overBudget) {
-          log.warn(
-            { event: "budget_race", tenantId: ctx.tenant.id, cost_usd: costUsd },
-            "Budget cap exceeded by concurrent request; cost already incurred at provider",
-          );
+        const latencyMs = Date.now() - start;
+        const spec = MODEL_REGISTRY.find(
+          (s) => s.provider === route.provider && s.modelId === route.model
+        );
+        const costUsd = spec
+          ? estimateCost(spec, response.usage.prompt_tokens, response.usage.completion_tokens)
+          : 0;
+
+        if (costUsd > 0) {
+          const { overBudget } = await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+          if (overBudget) {
+            log.warn(
+              { event: "budget_race", tenantId: ctx.tenant.id, cost_usd: costUsd },
+              "Budget cap exceeded by concurrent request; cost already incurred at provider",
+            );
+          }
         }
+
+        await logRequest({
+          traceId,
+          tenantId: ctx.tenant.id,
+          requestedModel: body.model,
+          routedProvider: route.provider,
+          routedModel: route.model,
+          inputTokens: response.usage.prompt_tokens,
+          outputTokens: response.usage.completion_tokens,
+          costUsd,
+          latencyMs,
+          status: "success",
+          cached: false,
+          streaming: false,
+        });
+
+        log.info(
+          {
+            provider: route.provider, model: route.model,
+            latency_ms: latencyMs, cost_usd: costUsd,
+            failover_attempts: i,
+          },
+          i > 0 ? "Request complete after failover" : "Request complete",
+        );
+
+        if (isCacheable(body)) {
+          setCached(cacheKey(body), response);
+        }
+
+        return reply.send(response);
+      } catch (err: any) {
+        await recordFailure(route.provider);
+        lastErr = err;
+
+        const status = err?.statusCode;
+        const isClientError = status && status >= 400 && status < 500 && status !== 429;
+
+        log.warn(
+          {
+            provider: route.provider, model: route.model,
+            status_code: status, attempt_latency_ms: Date.now() - attemptStart,
+            event: "provider_attempt_failed",
+          },
+          "Provider failed; trying next candidate",
+        );
+
+        // Client errors (4xx other than 429) won't succeed on a different provider.
+        if (isClientError) break;
+        // Otherwise continue to the next candidate
       }
-
-      await logRequest({
-        traceId,
-        tenantId: ctx.tenant.id,
-        requestedModel: body.model,
-        routedProvider: route.provider,
-        routedModel: route.model,
-        inputTokens: response.usage.prompt_tokens,
-        outputTokens: response.usage.completion_tokens,
-        costUsd,
-        latencyMs,
-        status: "success",
-        cached: false,
-        streaming: false,
-      });
-
-      log.info(
-        { provider: route.provider, model: route.model, latency_ms: latencyMs, cost_usd: costUsd },
-        "Request complete"
-      );
-
-      if (isCacheable(body)) {
-        setCached(cacheKey(body), response);
-      }
-
-      return reply.send(response);
-    } catch (err: any) {
-      await recordFailure(route.provider);
-      const latencyMs = Date.now() - start;
-      const status =
-        err?.name === "AbortError" || err?.code === "UND_ERR_CONNECT_TIMEOUT"
-          ? "timeout"
-          : "error";
-
-      await logRequest({
-        traceId,
-        tenantId: ctx.tenant.id,
-        requestedModel: body.model,
-        routedProvider: route.provider,
-        routedModel: route.model,
-        latencyMs,
-        status,
-        errorCode: String(err?.statusCode ?? "UNKNOWN"),
-        streaming: false,
-      });
-
-      log.error({ provider: route.provider, error: err.message, status }, "Request failed");
-
-      // Only pass 400 (bad request) back to the client - it means the request itself
-      // was malformed. 401/403/404 from a provider means gateway config is broken
-      // (wrong API key, model not found) - that's our problem, not the tenant's.
-      const httpCode = err?.statusCode === 400 ? 400 : 502;
-      return reply
-        .code(httpCode)
-        .send({ error: err.message ?? "Upstream provider error", trace_id: traceId });
     }
+
+    // All candidates failed
+    const latencyMs = Date.now() - start;
+    const finalStatus =
+      lastErr?.name === "AbortError" || lastErr?.code === "UND_ERR_CONNECT_TIMEOUT"
+        ? "timeout"
+        : "error";
+
+    await logRequest({
+      traceId,
+      tenantId: ctx.tenant.id,
+      requestedModel: body.model,
+      routedProvider: lastRoute.provider,
+      routedModel: lastRoute.model,
+      latencyMs,
+      status: finalStatus,
+      errorCode: String(lastErr?.statusCode ?? "UNKNOWN"),
+      streaming: false,
+    });
+
+    log.error(
+      { providers_tried: candidates.length, last_error: lastErr?.message, status: finalStatus },
+      "All provider candidates failed",
+    );
+
+    const httpCode = lastErr?.statusCode === 400 ? 400 : 502;
+    return reply
+      .code(httpCode)
+      .send({ error: lastErr?.message ?? "All providers failed", trace_id: traceId });
   });
 }
 
