@@ -229,3 +229,65 @@ describe("admin endpoints", () => {
     expect(body.length).toBeGreaterThan(0);
   });
 });
+
+describe("admin X-Admin-Key authentication", () => {
+  const TEST_ADMIN_KEY = "test-admin-key-switchboard";
+
+  beforeEach(() => {
+    // Activate admin auth for this describe block.
+    // The preHandler reads process.env at request time, so this takes effect
+    // immediately without rebuilding the server.
+    process.env.ADMIN_API_KEY = TEST_ADMIN_KEY;
+  });
+
+  afterEach(() => {
+    // Remove so that other test blocks remain unaffected (open admin).
+    delete process.env.ADMIN_API_KEY;
+  });
+
+  it("rejects GET /admin/tenants with no X-Admin-Key header", async () => {
+    const res = await server.inject({ method: "GET", url: "/admin/tenants" });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error).toMatch(/X-Admin-Key/i);
+  });
+
+  it("rejects GET /admin/tenants with wrong X-Admin-Key value", async () => {
+    const res = await server.inject({
+      method: "GET",
+      url: "/admin/tenants",
+      headers: { "x-admin-key": "totally-wrong-key" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("allows GET /admin/tenants with correct X-Admin-Key", async () => {
+    const res = await server.inject({
+      method: "GET",
+      url: "/admin/tenants",
+      headers: { "x-admin-key": TEST_ADMIN_KEY },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(Array.isArray(res.json())).toBe(true);
+  });
+
+  it("rejects POST /admin/tenants without the key", async () => {
+    const res = await server.inject({
+      method: "POST",
+      url: "/admin/tenants",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "should-not-be-created" }),
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("allows POST /admin/tenants with correct key and creates tenant", async () => {
+    const res = await server.inject({
+      method: "POST",
+      url: "/admin/tenants",
+      headers: { "Content-Type": "application/json", "x-admin-key": TEST_ADMIN_KEY },
+      body: JSON.stringify({ name: "authed-tenant", budget_usd_monthly: 5 }),
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().api_key).toMatch(/^sk-/);
+  });
+});

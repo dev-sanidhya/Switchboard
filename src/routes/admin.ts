@@ -25,11 +25,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
     );
   }
 
-  // Protect all admin routes when ADMIN_API_KEY is configured
+  // Protect all admin routes when ADMIN_API_KEY is configured.
+  // Read process.env at request time (not registration time) so that tests can
+  // set/unset ADMIN_API_KEY per-test without restarting the server.
   fastify.addHook("preHandler", async (req, reply) => {
-    if (!config.ADMIN_API_KEY) return;
+    const adminKey = process.env.ADMIN_API_KEY;
+    if (!adminKey) return;
     const provided = req.headers["x-admin-key"];
-    if (provided !== config.ADMIN_API_KEY) {
+    if (provided !== adminKey) {
       return reply.code(401).send({ error: "Missing or invalid X-Admin-Key header" });
     }
   });
