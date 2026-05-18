@@ -1,0 +1,15 @@
+node_modules
+dist
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+test
+*.test.ts
+.git
+.gitignore
+README.md
+DESIGN.md
+Plan.md
