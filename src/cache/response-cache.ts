@@ -18,8 +18,21 @@ export function isCacheable(req: ChatRequest): boolean {
   return temp <= CACHE_TEMP_THRESHOLD;
 }
 
-export function cacheKey(req: ChatRequest): string {
+/**
+ * Cache keys are tenant-scoped. Even when two tenants send identical prompts,
+ * they get separate cache entries. Reasoning:
+ *   - tenant_id is a strong isolation boundary; cache hits shouldn't cross it
+ *   - tenant config (allowed providers, model allowlist) can affect routing
+ *     and thus the response a tenant would have gotten
+ *   - it eliminates any chance of one tenant inferring another tenant's prompts
+ *     from cache-hit latency timing attacks
+ *
+ * Trade-off: lower hit rate. Acceptable since the alternative is a multi-tenant
+ * isolation hole.
+ */
+export function cacheKey(req: ChatRequest, tenantId: string): string {
   const payload = JSON.stringify({
+    tenant: tenantId,
     model: req.model,
     messages: req.messages,
     temperature: req.temperature ?? 0.7,

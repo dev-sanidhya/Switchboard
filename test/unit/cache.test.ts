@@ -46,31 +46,43 @@ describe("response cache", () => {
     expect(isCacheable({ ...baseReq, temperature: 0.31 })).toBe(false);
   });
 
-  it("generates consistent cache keys for identical requests", () => {
-    const key1 = cacheKey(baseReq);
-    const key2 = cacheKey({ ...baseReq });
+  it("generates consistent cache keys for identical requests (same tenant)", () => {
+    const key1 = cacheKey(baseReq, "tenant-A");
+    const key2 = cacheKey({ ...baseReq }, "tenant-A");
     expect(key1).toBe(key2);
   });
 
   it("generates different keys for different messages", () => {
-    const key1 = cacheKey(baseReq);
-    const key2 = cacheKey({ ...baseReq, messages: [{ role: "user", content: "different" }] });
+    const key1 = cacheKey(baseReq, "tenant-A");
+    const key2 = cacheKey(
+      { ...baseReq, messages: [{ role: "user", content: "different" }] },
+      "tenant-A",
+    );
     expect(key1).not.toBe(key2);
   });
 
   it("generates different keys for different models", () => {
-    const key1 = cacheKey(baseReq);
-    const key2 = cacheKey({ ...baseReq, model: "gpt-oss-120b" });
+    const key1 = cacheKey(baseReq, "tenant-A");
+    const key2 = cacheKey({ ...baseReq, model: "gpt-oss-120b" }, "tenant-A");
+    expect(key1).not.toBe(key2);
+  });
+
+  it("generates different keys across tenants even for identical prompts (isolation)", () => {
+    const key1 = cacheKey(baseReq, "tenant-A");
+    const key2 = cacheKey(baseReq, "tenant-B");
     expect(key1).not.toBe(key2);
   });
 
   it("returns undefined for cache miss", () => {
-    const key = cacheKey({ ...baseReq, messages: [{ role: "user", content: "cache-miss-test" }] });
+    const key = cacheKey(
+      { ...baseReq, messages: [{ role: "user", content: "cache-miss-test" }] },
+      "tenant-miss",
+    );
     expect(getCached(key)).toBeUndefined();
   });
 
   it("returns stored response on cache hit", () => {
-    const key = cacheKey(baseReq);
+    const key = cacheKey(baseReq, "tenant-hit");
     setCached(key, mockResponse);
     const result = getCached(key);
     expect(result).toEqual(mockResponse);

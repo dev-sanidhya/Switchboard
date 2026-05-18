@@ -73,7 +73,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
     // Cache check (non-streaming, deterministic requests only)
     if (!body.stream && isCacheable(body)) {
-      const key = cacheKey(body);
+      const key = cacheKey(body, ctx.tenant.id);
       const cached = getCached(key);
       if (cached) {
         log.info({ event: "cache_hit", model: body.model }, "Cache hit");
@@ -180,7 +180,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         );
 
         if (isCacheable(body)) {
-          setCached(cacheKey(body), response);
+          setCached(cacheKey(body, ctx.tenant.id), response);
         }
 
         return reply.send(response);
