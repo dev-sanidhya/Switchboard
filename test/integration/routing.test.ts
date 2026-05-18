@@ -26,11 +26,17 @@ beforeEach(async () => {
 });
 
 describe("metrics endpoint", () => {
-  it("returns zero-count metrics for new tenant", async () => {
-    const { tenantId } = await createTestTenant({ name: "metrics-test" });
+  it("rejects unauthenticated metrics requests", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics?window=1h" });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("returns zero-count metrics for new tenant when auth'd with bearer", async () => {
+    const { apiKey, tenantId } = await createTestTenant({ name: "metrics-test" });
     const res = await server.inject({
       method: "GET",
-      url: `/metrics?tenant=${tenantId}&window=1h`,
+      url: `/metrics?window=1h`,
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -39,13 +45,29 @@ describe("metrics endpoint", () => {
     expect(body.tenant).toBe(tenantId);
   });
 
-  it("rejects invalid window parameter", async () => {
-    const res = await server.inject({ method: "GET", url: "/metrics?window=1y" });
+  it("tenant cannot query another tenant's metrics", async () => {
+    const { apiKey } = await createTestTenant({ name: "tenant-x" });
+    const { tenantId: otherId } = await createTestTenant({ name: "tenant-y" });
+    const res = await server.inject({
+      method: "GET",
+      url: `/metrics?tenant=${otherId}&window=1h`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("rejects invalid window parameter (when auth'd)", async () => {
+    const { apiKey } = await createTestTenant({ name: "window-test" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/metrics?window=1y",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
     expect(res.statusCode).toBe(400);
   });
 
   it("accumulates request counts after completions", async () => {
-    const { apiKey, tenantId } = await createTestTenant({
+    const { apiKey } = await createTestTenant({
       name: "metrics-count-test",
       allowedProviders: ["groq"],
     });
@@ -62,17 +84,19 @@ describe("metrics endpoint", () => {
 
     const res = await server.inject({
       method: "GET",
-      url: `/metrics?tenant=${tenantId}&window=1h`,
+      url: `/metrics?window=1h`,
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
     const body = res.json();
     expect(body.requests.total).toBe(2);
   });
 
   it("returns spend breakdown by provider", async () => {
-    const { tenantId } = await createTestTenant({ name: "spend-test" });
+    const { apiKey } = await createTestTenant({ name: "spend-test" });
     const res = await server.inject({
       method: "GET",
-      url: `/metrics?tenant=${tenantId}&window=24h`,
+      url: `/metrics?window=24h`,
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
     const body = res.json();
     expect(body.by_provider).toBeDefined();
@@ -81,7 +105,7 @@ describe("metrics endpoint", () => {
   });
 
   it("counts rate-limited rejections in metrics (middleware rejection path)", async () => {
-    const { apiKey, tenantId } = await createTestTenant({
+    const { apiKey } = await createTestTenant({
       name: "metrics-rate-limit-test",
       requestsPerMinute: 1,
     });
@@ -102,7 +126,8 @@ describe("metrics endpoint", () => {
     // Metrics must include the rate-limited request (codex regression test)
     const res = await server.inject({
       method: "GET",
-      url: `/metrics?tenant=${tenantId}&window=1h`,
+      url: `/metrics?window=1h`,
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
     const body = res.json();
     expect(body.requests.total).toBe(2);
