@@ -465,17 +465,15 @@ This is ONLY enabled when `ENABLE_TEST_ENDPOINTS=true` in env.
 - [x] Failure injection endpoint (POST /test/inject-failure)
 - [x] Seed script (npm run seed - 3 demo tenants, keys printed)
 
-### Still to build
-- [ ] Integration tests (multi-tenant isolation, circuit breaker, budget exhaustion)
-- [ ] DESIGN.md (start immediately - most important deliverable)
-- [ ] README (setup + curl examples + failure injection guide)
+### Completed deliverables
+- [x] Integration tests (54 tests, 3 unit + 3 integration files, all passing)
+- [x] DESIGN.md (7 sections, honest failure modes, "what we didn't build" with effort estimates, scaling story)
+- [x] README.md (clone-to-running in 5 min, failure injection guide, full demo curl flow)
+- [x] .env.example committed to repo
 - [ ] Demo video script + recording
 
 ---
 
-## Next Steps (Priority Order)
+## Next Steps
 
-1. **DESIGN.md** - 3-4 hours, most weight in evaluation (35%)
-2. **Integration tests** - at least: multi-tenant budget isolation, circuit breaker trip/recovery, cache hit/miss
-3. **README** - must include: clone-to-running in 5 min, failure injection curl commands, metrics query examples
-4. **Demo video** - 8-12 min, architecture walkthrough + live demo with failure injection
+1. **Demo video** - 8-12 min, architecture walkthrough + live demo with failure injection, one proud decision + one uncertain decision, open question for Skyclad
