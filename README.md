@@ -141,12 +141,20 @@ curl http://localhost:3000/health
 ### Metrics
 
 ```bash
-# Spend by model over the last 24 hours
-curl "http://localhost:3000/metrics?tenant=TENANT_ID&window=24h"
+# Spend for YOUR tenant (auth via bearer; ?tenant= ignored if it doesn't match)
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:3000/metrics?window=24h"
 
-# Other windows: 1h, 7d, 30d
-curl "http://localhost:3000/metrics?tenant=TENANT_ID&window=1h"
+# Supported windows: 1h, 24h, 7d
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:3000/metrics?window=1h"
+
+# Admins can query any tenant or omit ?tenant= for global view
+curl -H "X-Admin-Key: $ADMIN_API_KEY" \
+  "http://localhost:3000/metrics?tenant=TENANT_ID&window=24h"
 ```
+
+The `/metrics` endpoint requires authentication. A tenant Bearer token returns metrics scoped to that tenant only (cross-tenant queries get `403`). An admin `X-Admin-Key` can query any tenant or omit `?tenant=` for an aggregate view across all tenants.
 
 ```json
 {
@@ -351,11 +359,16 @@ done
 | `CEREBRAS_API_KEY` | - | Cerebras API key (optional) |
 | `GEMINI_API_KEY` | - | Gemini API key (optional) |
 | `PORT` | `3000` | HTTP port |
-| `LOG_LEVEL` | `info` | Pino log level |
-| `CACHE_TTL_SECONDS` | `300` | Response cache TTL |
-| `CACHE_MAX_SIZE` | `1000` | Max cached entries |
+| `CACHE_TTL_SECONDS` | `3600` | Response cache TTL |
+| `CACHE_MAX_ITEMS` | `500` | Max cached entries |
 | `CB_FAILURE_THRESHOLD` | `5` | Failures before circuit opens |
-| `CB_RESET_TIMEOUT_MS` | `30000` | Time before HALF_OPEN attempt |
+| `CB_RESET_TIMEOUT_MS` | `60000` | Time before HALF_OPEN attempt |
+| `RETRY_MAX_ATTEMPTS` | `3` | Max retry attempts per provider call |
+| `RETRY_BASE_DELAY_MS` | `100` | Base backoff delay (exponential) |
+| `REQUEST_TIMEOUT_MS` | `30000` | Non-streaming request timeout |
+| `STREAM_FIRST_TOKEN_TIMEOUT_MS` | `5000` | Time-to-first-token cap for streams |
+| `STREAM_IDLE_TIMEOUT_MS` | `10000` | Max gap between SSE chunks before abort |
+| `ADMIN_API_KEY` | - | If set, required in `X-Admin-Key` for `/admin/*` and admin-scope `/metrics` queries |
 | `ENABLE_TEST_ENDPOINTS` | `false` | Exposes `/test/inject-failure` |
 
 ---
