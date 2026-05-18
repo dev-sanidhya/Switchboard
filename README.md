@@ -216,18 +216,19 @@ curl -X DELETE \
 npm test
 ```
 
-54 tests across 6 files (3 unit, 3 integration). Tests run sequentially against an isolated `test.db` - no external services needed. The mock adapter system replaces real provider calls.
+73 tests across 7 files (4 unit, 3 integration). Tests run sequentially against an isolated `test.db` - no external services needed. The mock adapter system replaces real provider calls.
 
 ```
  Unit tests
    circuit-breaker.test.ts   7 tests
    cost-router.test.ts       6 tests
-   cache.test.ts             11 tests
+   failover-router.test.ts   7 tests
+   cache.test.ts             12 tests
 
  Integration tests
-   multi-tenant.test.ts      14 tests  (port 3991)
-   resilience.test.ts        9 tests   (port 3992)
-   routing.test.ts           12 tests  (port 3993)
+   multi-tenant.test.ts      17 tests  (port 3991)
+   resilience.test.ts        7 tests   (port 3992)
+   routing.test.ts           17 tests  (port 3993)
 ```
 
 ---
@@ -320,8 +321,13 @@ curl -X POST http://localhost:3000/v1/chat/completions \
   -d '{"model": "cheap", "messages": [{"role": "user", "content": "cached?"}], "temperature": 0}'
 # Run again - latency drops to ~1ms, x-trace-id present
 
-# 5. Metrics
-curl "http://localhost:3000/metrics?tenant=$TENANT_ID&window=1h" | jq .
+# 5. Metrics (tenant-scoped via Bearer token; ?tenant= ignored for non-admins)
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:3000/metrics?window=1h" | jq .
+
+# Admin-scoped query (requires ADMIN_API_KEY set in .env)
+curl -H "X-Admin-Key: $ADMIN_API_KEY" \
+  "http://localhost:3000/metrics?tenant=$TENANT_ID&window=1h" | jq .
 
 # 6. Inject failure + observe failover
 curl -X POST http://localhost:3000/test/inject-failure \
