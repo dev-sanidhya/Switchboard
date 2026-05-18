@@ -415,24 +415,67 @@ This is ONLY enabled when `ENABLE_TEST_ENDPOINTS=true` in env.
 
 ---
 
+## Approach Updates & Pivots
+
+### Provider Swap: Groq + Cerebras (not Anthropic + OpenAI)
+- Both are free-tier, both use OpenAI-compatible APIs
+- Cerebras uses wafer-scale chips (different latency/throughput profile from Groq's LPUs)
+- This actually tells a better routing story: two genuinely different inference backends
+- Groq decommissioned `mixtral-8x7b-32768` and `gemma2-9b-it` mid-build - confirmed live models against their API
+- Gemini support is stubbed in (adapter exists) but optional - GEMINI_API_KEY not required
+
+### DB Driver: libsql instead of better-sqlite3
+- better-sqlite3 requires native compilation (node-gyp)
+- Node v24.14.0 + Windows = no pre-built binaries, build fails
+- Switched to @libsql/client (Turso's pure-binary SQLite driver)
+- Drizzle supports it natively, zero API surface change
+
+### Live Model Registry (confirmed against API Jan 2026)
+- Groq: `llama-3.1-8b-instant` (cheap), `meta-llama/llama-4-scout-17b-16e-instruct` (balanced), `llama-3.3-70b-versatile` (best)
+- Cerebras: `llama3.1-8b` (cheap), `gpt-oss-120b` (best)
+
+---
+
 ## Current State
 
-- [ ] Project scaffolded
-- [ ] Database schema defined
-- [ ] Provider adapters (Anthropic, OpenAI)
-- [ ] Non-streaming chat endpoint
-- [ ] Streaming SSE endpoint
-- [ ] Auth middleware
-- [ ] Rate limiter
-- [ ] Budget enforcer
-- [ ] Cost router
-- [ ] Circuit breaker
-- [ ] Retry + timeout
-- [ ] Cache layer
-- [ ] Metrics endpoint
-- [ ] Health endpoint
-- [ ] Failure injection endpoint
-- [ ] Seed script
-- [ ] Integration tests
-- [ ] DESIGN.md
-- [ ] README
+### Built and verified working
+- [x] Project scaffolded (Fastify 5 + TypeScript + ESM)
+- [x] Database schema (5 tables: tenants, api_keys, tenant_limits, requests, provider_health)
+- [x] SQLite via libsql + Drizzle ORM with migrations
+- [x] Config layer with zod validation
+- [x] Structured logging (pino + pino-pretty)
+- [x] Groq adapter (streaming + non-streaming, real API calls working)
+- [x] Cerebras adapter (streaming + non-streaming, real API calls working)
+- [x] Gemini adapter (stubbed, needs GEMINI_API_KEY)
+- [x] Mock adapter (error_500, timeout, slow_response, rate_limited modes)
+- [x] Provider registry (real + mock, mock overrides real when active)
+- [x] Cost router (picks cheapest healthy provider per tier)
+- [x] Failover router (ordered fallback: groq -> cerebras -> gemini)
+- [x] Circuit breaker (CLOSED/OPEN/HALF_OPEN state machine, DB-persisted)
+- [x] Retry with exponential backoff + jitter
+- [x] Auth middleware (Bearer API key -> tenant lookup)
+- [x] Rate limiter (sliding window token bucket, per-tenant)
+- [x] Budget enforcer (monthly cap with auto-reset)
+- [x] Response cache (LRU + TTL, temp=0 threshold)
+- [x] Chat completion endpoint (POST /v1/chat/completions)
+- [x] Streaming SSE endpoint (partial response handling on upstream abort)
+- [x] Metrics endpoint (GET /metrics?tenant=X&window=24h)
+- [x] Health endpoint (GET /health with circuit breaker state)
+- [x] Admin endpoints (POST/GET /admin/tenants, issue API keys)
+- [x] Failure injection endpoint (POST /test/inject-failure)
+- [x] Seed script (npm run seed - 3 demo tenants, keys printed)
+
+### Still to build
+- [ ] Integration tests (multi-tenant isolation, circuit breaker, budget exhaustion)
+- [ ] DESIGN.md (start immediately - most important deliverable)
+- [ ] README (setup + curl examples + failure injection guide)
+- [ ] Demo video script + recording
+
+---
+
+## Next Steps (Priority Order)
+
+1. **DESIGN.md** - 3-4 hours, most weight in evaluation (35%)
+2. **Integration tests** - at least: multi-tenant budget isolation, circuit breaker trip/recovery, cache hit/miss
+3. **README** - must include: clone-to-running in 5 min, failure injection curl commands, metrics query examples
+4. **Demo video** - 8-12 min, architecture walkthrough + live demo with failure injection
