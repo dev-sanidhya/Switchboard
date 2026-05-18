@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "description": "Multi-tenant LLM gateway",
   "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/src/server.js",
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc",
-    "start": "node dist/main.js",
+    "start": "node dist/src/main.js",
     "db:migrate": "tsx src/db/migrate.ts",
     "seed": "tsx scripts/seed.ts",
     "test": "vitest run",

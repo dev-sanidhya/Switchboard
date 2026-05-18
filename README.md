@@ -425,7 +425,7 @@ cp .env.example .env  # fill in API keys
 docker compose up --build
 
 # Seed demo tenants inside the container
-docker compose exec gateway node dist/scripts/seed.js
+docker compose exec gateway node dist/scripts/seed.js  # path uses dist/scripts after build
 ```
 
 The SQLite database is persisted in a Docker named volume (`switchboard_data`). Restarting the container preserves tenant config, budgets, and request logs.

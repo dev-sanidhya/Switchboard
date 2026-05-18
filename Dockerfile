@@ -34,4 +34,4 @@ EXPOSE 3000
 ENV NODE_ENV=production
 
 # Runs migrations then starts the gateway
-CMD ["node", "dist/main.js"]
+CMD ["node", "dist/src/main.js"]
