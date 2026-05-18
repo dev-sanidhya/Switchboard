@@ -10,6 +10,17 @@ const WINDOW_MS: Record<MetricsWindow, number> = {
   "7d": 7 * 24 * 60 * 60 * 1000,
 };
 
+// Classification of request outcomes. Anything not in SUCCESS counts toward
+// the error rate. Previously rate_limited and budget_exceeded were silently
+// excluded from errors, understating the actual failure surface to operators.
+const SUCCESS_STATUSES = new Set(["success", "cached"]);
+const ERROR_STATUSES = new Set([
+  "error",
+  "timeout",
+  "rate_limited",
+  "budget_exceeded",
+]);
+
 export async function getMetrics(tenantId: string | null, window: MetricsWindow) {
   const since = new Date(Date.now() - WINDOW_MS[window]);
 
@@ -23,9 +34,11 @@ export async function getMetrics(tenantId: string | null, window: MetricsWindow)
     .where(conditions);
 
   const total = rows.length;
-  const success = rows.filter((r) => r.status === "success" || r.status === "cached").length;
-  const errors = rows.filter((r) => r.status === "error" || r.status === "timeout").length;
+  const success = rows.filter((r) => SUCCESS_STATUSES.has(r.status)).length;
+  const errors = rows.filter((r) => ERROR_STATUSES.has(r.status)).length;
   const cached = rows.filter((r) => r.cached).length;
+  const rateLimited = rows.filter((r) => r.status === "rate_limited").length;
+  const budgetExceeded = rows.filter((r) => r.status === "budget_exceeded").length;
 
   const latencies = rows
     .filter((r) => r.latencyMs != null)
@@ -36,14 +49,15 @@ export async function getMetrics(tenantId: string | null, window: MetricsWindow)
   const totalOutputTokens = rows.reduce((s, r) => s + (r.outputTokens ?? 0), 0);
   const totalCost = rows.reduce((s, r) => s + (r.costUsd ?? 0), 0);
 
-  // Per-provider breakdown
+  // Per-provider breakdown. Gateway-layer rejections (rate_limited, budget_exceeded)
+  // have no routed_provider; they land under "gateway" in the breakdown.
   const byProvider: Record<string, { requests: number; cost: number; errors: number }> = {};
   for (const r of rows) {
-    const p = r.routedProvider ?? "unknown";
+    const p = r.routedProvider ?? "gateway";
     if (!byProvider[p]) byProvider[p] = { requests: 0, cost: 0, errors: 0 };
     byProvider[p].requests++;
     byProvider[p].cost += r.costUsd ?? 0;
-    if (r.status === "error" || r.status === "timeout") byProvider[p].errors++;
+    if (ERROR_STATUSES.has(r.status)) byProvider[p].errors++;
   }
 
   // Per-model breakdown
@@ -61,7 +75,14 @@ export async function getMetrics(tenantId: string | null, window: MetricsWindow)
     tenant: tenantId ?? "all",
     window,
     since: since.toISOString(),
-    requests: { total, success, errors, cached },
+    requests: {
+      total,
+      success,
+      errors,
+      cached,
+      rate_limited: rateLimited,
+      budget_exceeded: budgetExceeded,
+    },
     latency: percentiles(latencies),
     tokens: { input: totalInputTokens, output: totalOutputTokens },
     cost_usd: Math.round(totalCost * 1e6) / 1e6,

@@ -132,6 +132,68 @@ describe("metrics endpoint", () => {
     const body = res.json();
     expect(body.requests.total).toBe(2);
   });
+
+  it("rate-limited requests count toward errors (not just total) in metrics", async () => {
+    // Codex regression: requests.errors used to only count error|timeout,
+    // so 429s/402s were silently excluded from the error rate.
+    const { apiKey } = await createTestTenant({
+      name: "metrics-error-rate-test",
+      requestsPerMinute: 1,
+    });
+
+    const makeReq = () => server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: "cheap", messages: [{ role: "user", content: "hi" }] }),
+    });
+
+    await makeReq();      // consumes the rate-limit token
+    await makeReq();      // 429
+    await makeReq();      // 429 again
+
+    const res = await server.inject({
+      method: "GET",
+      url: `/metrics?window=1h`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const body = res.json();
+
+    expect(body.requests.total).toBe(3);
+    // At least the 2 rate-limited requests must be in errors
+    expect(body.requests.errors).toBeGreaterThanOrEqual(2);
+    expect(body.requests.rate_limited).toBe(2);
+  });
+
+  it("budget-exceeded requests count toward errors in metrics", async () => {
+    const { apiKey, limitId } = await createTestTenant({
+      name: "metrics-budget-error-test",
+      budgetUsdMonthly: 0.001,
+    });
+
+    // Force budget exhausted
+    const { db } = await import("../../src/db/client.js");
+    const { tenantLimits } = await import("../../src/db/schema.js");
+    const { eq } = await import("drizzle-orm");
+    await db.update(tenantLimits).set({ budgetUsedUsd: 0.001 }).where(eq(tenantLimits.id, limitId));
+
+    // Request gets 402
+    await server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: "cheap", messages: [{ role: "user", content: "hi" }] }),
+    });
+
+    const res = await server.inject({
+      method: "GET",
+      url: `/metrics?window=1h`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const body = res.json();
+    expect(body.requests.budget_exceeded).toBe(1);
+    expect(body.requests.errors).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe("cache", () => {
