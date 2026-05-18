@@ -29,8 +29,11 @@ const schema = z.object({
     .default("false"),
 
   // If set, all /admin/* routes require this value in the X-Admin-Key header.
-  // If unset, admin routes are open (acceptable for local dev; set this in production).
-  ADMIN_API_KEY: z.string().min(1).optional(),
+  // Empty string or unset disables admin auth (acceptable for local dev only).
+  ADMIN_API_KEY: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
 });
 
 const parsed = schema.safeParse(process.env);

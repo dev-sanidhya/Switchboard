@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { db } from "../db/client.js";
 import { tenantLimits } from "../db/schema.js";
 import { and, eq, sql } from "drizzle-orm";
+import { logRequest } from "../observability/request-log.js";
 
 export async function budgetMiddleware(req: FastifyRequest, reply: FastifyReply) {
   const ctx = req.tenantCtx;
@@ -22,6 +23,17 @@ export async function budgetMiddleware(req: FastifyRequest, reply: FastifyReply)
   }
 
   if (limits.budgetUsedUsd >= limits.budgetUsdMonthly) {
+    // Persist the rejection so /metrics sees it.
+    const body = req.body as { model?: string; stream?: boolean } | undefined;
+    await logRequest({
+      traceId: req.traceId ?? "unknown",
+      tenantId: ctx.tenant.id,
+      requestedModel: body?.model ?? "unknown",
+      status: "budget_exceeded",
+      errorCode: "402",
+      streaming: Boolean(body?.stream),
+    });
+
     return reply.code(402).send({
       error: "Monthly budget exhausted",
       budget_usd: limits.budgetUsdMonthly,

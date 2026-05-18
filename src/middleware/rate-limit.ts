@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { logRequest } from "../observability/request-log.js";
 
 // Sliding window rate limiter using an in-process token bucket per tenant.
 // NOTE: This is single-instance only. Multiple gateway instances would each
@@ -39,6 +40,18 @@ export async function rateLimitMiddleware(req: FastifyRequest, reply: FastifyRep
     const retryAfterMs = Math.ceil((1 - bucket.tokens) * (60000 / maxPerMin));
     const retryAfterSec = Math.ceil(retryAfterMs / 1000);
     reply.header("Retry-After", String(retryAfterSec));
+
+    // Persist the rejection so /metrics sees it. Required by observability spec.
+    const body = req.body as { model?: string; stream?: boolean } | undefined;
+    await logRequest({
+      traceId: req.traceId ?? "unknown",
+      tenantId: tenant.id,
+      requestedModel: body?.model ?? "unknown",
+      status: "rate_limited",
+      errorCode: "429",
+      streaming: Boolean(body?.stream),
+    });
+
     return reply.code(429).send({
       error: "Rate limit exceeded",
       limit: maxPerMin,

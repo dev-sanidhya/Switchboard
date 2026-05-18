@@ -13,6 +13,7 @@ export interface TenantContext {
 declare module "fastify" {
   interface FastifyRequest {
     tenantCtx?: TenantContext;
+    traceId?: string;
   }
 }
 

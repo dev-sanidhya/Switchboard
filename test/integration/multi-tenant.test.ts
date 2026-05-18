@@ -232,17 +232,21 @@ describe("admin endpoints", () => {
 
 describe("admin X-Admin-Key authentication", () => {
   const TEST_ADMIN_KEY = "test-admin-key-switchboard";
+  let savedAdminKey: string | undefined;
 
   beforeEach(() => {
-    // Activate admin auth for this describe block.
-    // The preHandler reads process.env at request time, so this takes effect
-    // immediately without rebuilding the server.
+    // Activate admin auth for this describe block. Save the prior value (vitest
+    // sets ADMIN_API_KEY="" so tests in other blocks see admin auth disabled).
+    savedAdminKey = process.env.ADMIN_API_KEY;
     process.env.ADMIN_API_KEY = TEST_ADMIN_KEY;
   });
 
   afterEach(() => {
-    // Remove so that other test blocks remain unaffected (open admin).
-    delete process.env.ADMIN_API_KEY;
+    if (savedAdminKey === undefined) {
+      delete process.env.ADMIN_API_KEY;
+    } else {
+      process.env.ADMIN_API_KEY = savedAdminKey;
+    }
   });
 
   it("rejects GET /admin/tenants with no X-Admin-Key header", async () => {

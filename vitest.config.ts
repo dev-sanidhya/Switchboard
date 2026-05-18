@@ -18,6 +18,9 @@ export default defineConfig({
       RETRY_BASE_DELAY_MS: "10",
       REQUEST_TIMEOUT_MS: "5000",
       STREAM_FIRST_TOKEN_TIMEOUT_MS: "2000",
+      // Override .env so admin auth defaults to OFF for tests; the X-Admin-Key
+      // test block sets process.env.ADMIN_API_KEY explicitly when it needs it.
+      ADMIN_API_KEY: "",
     },
     // Run test files sequentially - they share a SQLite file DB
     pool: "forks",

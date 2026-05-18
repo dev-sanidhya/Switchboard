@@ -9,10 +9,9 @@ import { withRetry } from "../resilience/retry.js";
 import { recordSuccess, recordFailure } from "../resilience/circuit-breaker.js";
 import { isCacheable, cacheKey, getCached, setCached } from "../cache/response-cache.js";
 import { estimateCost, MODEL_REGISTRY } from "../providers/types.js";
-import { db } from "../db/client.js";
-import { requests } from "../db/schema.js";
-import { generateTraceId, generateId } from "../observability/tracer.js";
+import { generateTraceId } from "../observability/tracer.js";
 import { requestLogger } from "../observability/logger.js";
+import { logRequest } from "../observability/request-log.js";
 
 // Rough token estimate: 1 token ~= 4 chars
 function estimateTokens(text: string): number {
@@ -49,6 +48,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post("/v1/chat/completions", async (req, reply) => {
     const traceId = generateTraceId();
+    req.traceId = traceId; // exposed to middleware so they can log to requests table
     reply.header("x-trace-id", traceId);
 
     // Auth -> rate limit -> budget (in order; each can short-circuit)
@@ -306,42 +306,3 @@ async function handleStream(
   }
 }
 
-async function logRequest(data: {
-  traceId: string;
-  tenantId: string;
-  requestedModel: string;
-  routedProvider?: string;
-  routedModel?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  costUsd?: number;
-  latencyMs?: number;
-  ttfbMs?: number;
-  status: string;
-  errorCode?: string;
-  cached?: boolean;
-  streaming: boolean;
-}) {
-  try {
-    await db.insert(requests).values({
-      id: generateId(),
-      traceId: data.traceId,
-      tenantId: data.tenantId,
-      requestedModel: data.requestedModel,
-      routedProvider: data.routedProvider ?? null,
-      routedModel: data.routedModel ?? null,
-      inputTokens: data.inputTokens ?? null,
-      outputTokens: data.outputTokens ?? null,
-      costUsd: data.costUsd ?? null,
-      latencyMs: data.latencyMs ?? null,
-      ttfbMs: data.ttfbMs ?? null,
-      status: data.status,
-      errorCode: data.errorCode ?? null,
-      cached: data.cached ?? false,
-      streaming: data.streaming,
-      createdAt: new Date(),
-    });
-  } catch {
-    // Non-fatal: logging failure must not affect the request
-  }
-}

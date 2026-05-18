@@ -79,6 +79,34 @@ describe("metrics endpoint", () => {
     expect(body.by_model).toBeDefined();
     expect(body.cost_usd).toBeTypeOf("number");
   });
+
+  it("counts rate-limited rejections in metrics (middleware rejection path)", async () => {
+    const { apiKey, tenantId } = await createTestTenant({
+      name: "metrics-rate-limit-test",
+      requestsPerMinute: 1,
+    });
+
+    const makeReq = () => server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: "cheap", messages: [{ role: "user", content: "hi" }] }),
+    });
+
+    // First request consumes the token (may 502 from mock but counts as 1 request)
+    await makeReq();
+    // Second request hits rate limit -> 429
+    const r2 = await makeReq();
+    expect(r2.statusCode).toBe(429);
+
+    // Metrics must include the rate-limited request (codex regression test)
+    const res = await server.inject({
+      method: "GET",
+      url: `/metrics?tenant=${tenantId}&window=1h`,
+    });
+    const body = res.json();
+    expect(body.requests.total).toBe(2);
+  });
 });
 
 describe("cache", () => {
