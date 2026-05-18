@@ -36,11 +36,14 @@ export async function rateLimitMiddleware(req: FastifyRequest, reply: FastifyRep
   refill(bucket, maxPerMin);
 
   if (bucket.tokens < 1) {
+    const retryAfterMs = Math.ceil((1 - bucket.tokens) * (60000 / maxPerMin));
+    const retryAfterSec = Math.ceil(retryAfterMs / 1000);
+    reply.header("Retry-After", String(retryAfterSec));
     return reply.code(429).send({
       error: "Rate limit exceeded",
       limit: maxPerMin,
       window: "1m",
-      retry_after_ms: Math.ceil((1 - bucket.tokens) * (60000 / maxPerMin)),
+      retry_after_ms: retryAfterMs,
     });
   }
 
