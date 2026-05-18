@@ -167,10 +167,13 @@ curl "http://localhost:3000/metrics?tenant=TENANT_ID&window=1h"
 
 ### Admin - tenant management
 
+Admin routes require `X-Admin-Key: <your-key>` when `ADMIN_API_KEY` is set in env. Without it, admin routes are open (dev only — always set this in production).
+
 ```bash
 # Create a tenant
 curl -X POST http://localhost:3000/admin/tenants \
   -H "Content-Type: application/json" \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
   -d '{
     "name": "my-app",
     "budget_usd_monthly": 10,
@@ -180,7 +183,21 @@ curl -X POST http://localhost:3000/admin/tenants \
   }'
 
 # List all tenants
-curl http://localhost:3000/admin/tenants
+curl -H "X-Admin-Key: $ADMIN_API_KEY" http://localhost:3000/admin/tenants
+
+# List API keys for a tenant
+curl -H "X-Admin-Key: $ADMIN_API_KEY" http://localhost:3000/admin/tenants/TENANT_ID/keys
+
+# Issue a new API key (for key rotation)
+curl -X POST http://localhost:3000/admin/tenants/TENANT_ID/keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -d '{"label": "v2"}'
+
+# Revoke an old key (takes effect immediately - no restart needed)
+curl -X DELETE \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  http://localhost:3000/admin/tenants/TENANT_ID/keys/KEY_ID
 ```
 
 ---
@@ -400,11 +417,28 @@ sqlite3 switchboard.db "
 
 ---
 
+## Running with Docker
+
+```bash
+# Build and start
+cp .env.example .env  # fill in API keys
+docker compose up --build
+
+# Seed demo tenants inside the container
+docker compose exec gateway node dist/scripts/seed.js
+```
+
+The SQLite database is persisted in a Docker named volume (`switchboard_data`). Restarting the container preserves tenant config, budgets, and request logs.
+
+---
+
 ## Known Limitations
 
-- **Rate limiting is in-process** - not safe for horizontal scaling. Multiple instances would each enforce limits independently. Production fix: Redis + sliding window atomic increment.
-- **SQLite single-writer** - concurrent writes queue behind WAL lock. Fine for demo / light production; switch to Postgres for >50 RPS sustained.
-- **No webhook on budget exhaustion** - tenant finds out on the next request with a 402. Production: background job + email/Slack alert.
-- **Circuit breaker state is per-instance** - same issue as rate limiting across multiple nodes.
+- **Rate limiting is in-process** - not safe for horizontal scaling. Multiple instances enforce limits independently. Production fix: Redis + atomic sliding window.
+- **SQLite single-writer** - concurrent writes serialize behind the WAL lock. Fine for demo and low traffic; switch to Postgres above ~50 RPS sustained.
+- **Budget race bounded, not eliminated** - the pre-flight budget check and the provider call are not in the same transaction. Concurrent requests near the cap can both proceed; the deduction step closes the race atomically and clamps the DB to the cap, so worst-case overspend is one request's cost. A proper reservation pattern (reserve upfront, settle after) would eliminate it entirely.
+- **Token estimation is character-count heuristic** - `chars / 4` approximates English text. CJK and other dense scripts tokenize at roughly 1 char per token, so cost routing and budget deductions can be off by 4x for non-English content.
+- **No webhook on budget exhaustion** - tenant discovers via 402 on next request. Production: background job + Slack/email alert.
+- **Circuit breaker state is per-instance** - same horizontal scaling issue as rate limiting.
 
-These are documented in detail in [DESIGN.md](DESIGN.md) sections 5 and 6.
+These are documented in detail in [DESIGN.md](DESIGN.md) sections 4, 5, and 6.

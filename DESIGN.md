@@ -201,7 +201,7 @@ Two identical concurrent requests (same model, messages, temperature) from the s
 
 **What happens if two tenants race the budget check?**
 
-Budget is checked (`budgetUsedUsd >= budgetUsdMonthly`) against a value loaded at request start. Two concurrent requests from a tenant near their budget cap can both pass the check, both make provider calls, and both deduct from the budget. The actual deduction uses a SQL increment (`budget_used_usd + cost`) which is atomic, but the pre-flight check is not. A tenant can overspend by up to (concurrent_requests × max_cost_per_request) above their cap. For a $0.10 monthly cap with typical request costs of $0.001, the overage is bounded. Proper fix: add `budget_used_usd + cost <= budget_usd_monthly` as a WHERE clause on the UPDATE and reject if 0 rows updated. Not implemented.
+Budget is checked (`budgetUsedUsd >= budgetUsdMonthly`) against a value loaded at request start. Two concurrent requests from a tenant near their budget cap can both pass the pre-flight check and proceed to the provider. The deduction step closes this race atomically: `UPDATE tenant_limits SET budget_used_usd = budget_used_usd + cost WHERE id = ? AND budget_used_usd + cost <= budget_usd_monthly RETURNING budget_used_usd`. If 0 rows are returned, the budget was exceeded at deduction time by a concurrent request. The actual provider cost is already incurred; we clamp the DB to the monthly cap and log a `budget_race` warning. The next pre-flight check then correctly fires a 402. This bounds the worst-case overspend to one request's cost above the cap, not unbounded concurrent overspend.
 
 **What happens if a provider drops the connection mid-stream after 50 tokens?**
 
@@ -225,7 +225,7 @@ Circuit breaker state: each instance has an independent in-memory cache. DB is a
 
 **Connection pooling for the DB.** libsql handles this internally, but a dedicated pool manager (pg-pool for Postgres) would give more control over connection limits. Relevant when migrating to Postgres under load.
 
-**Proper tenant provisioning flow.** The admin API creates tenants with no auth. In production, tenant creation would be gated by billing, and API keys would be delivered via a secure channel (not in a JSON response body). This is a security gap documented in the production gap analysis.
+**Proper tenant provisioning flow.** API keys are issued in the JSON response body and should ideally be delivered through a secure channel in production (encrypted email, secrets vault). The admin API itself is now protected by `X-Admin-Key` when `ADMIN_API_KEY` is configured, which closes the unauthenticated creation gap. In a real deployment, tenant creation would also be gated by a billing check before the admin key is issued.
 
 **Prompt injection detection.** Malicious tenants could craft prompts that attempt to jailbreak models or exfiltrate information from other tenants' context (if any context were shared, which it isn't in this design). A classifier at the input boundary would catch obvious injection attempts. Not implemented.
 
@@ -243,7 +243,9 @@ Circuit breaker state: each instance has an independent in-memory cache. DB is a
 
 The current auth model: bearer tokens that are SHA-256 hashes of raw API keys. The raw key is returned once at creation and never stored. The hash is stored. This is correct.
 
-What's missing: rate limiting on the auth lookup itself (prevent enumeration), key rotation without downtime (can issue new key, then revoke old), and audit logging of key issuance/revocation events. Closing this gap: 2-3 days of engineering. The DB schema already supports multiple keys per tenant and revocation timestamps — the missing piece is the operational tooling around it.
+Key rotation without downtime is implemented: issue a new key (`POST /admin/tenants/:id/keys`), migrate clients, then revoke the old key (`DELETE /admin/tenants/:id/keys/:keyId`). Revocation takes effect immediately — the auth middleware filters `revoked_at IS NOT NULL`. The admin API itself is protected by `X-Admin-Key` when `ADMIN_API_KEY` is configured.
+
+What's still missing: rate limiting on the auth lookup itself (prevent enumeration attacks against the key hash space), and structured audit logging of key issuance/revocation events. Closing this gap: 1 day of engineering.
 
 ### Gap 2: Secrets management
 
@@ -251,7 +253,9 @@ Provider API keys (`GROQ_API_KEY`, `CEREBRAS_API_KEY`) live in environment varia
 
 ### Gap 3: Deployment story
 
-There is no Dockerfile, no docker-compose for production, no Kubernetes manifests, no CI/CD pipeline. The service has no health check endpoint path configured for load balancers (the `/health` endpoint exists, but the Dockerfile to containerize it doesn't). Closing this gap: 1-2 days for containerization + basic CI (GitHub Actions for lint/test on PR).
+A multi-stage Dockerfile and `docker-compose.yml` are included. The Docker image runs as a non-root user (`switchboard`), mounts SQLite to a named volume for persistence across container restarts, and wires the `/health` endpoint into a Docker healthcheck.
+
+What's still missing: Kubernetes manifests, a CI/CD pipeline (GitHub Actions for lint/test on PR), and a secrets management integration (currently API keys are injected as plain env vars via docker-compose). Closing this gap: 1 day for CI + 1 day for K8s manifests.
 
 ### Gap 4: Load testing
 
