@@ -155,13 +155,33 @@ This is more defensible than round-robin (which ignores cost) or latency-only (w
 
 Why not latency routing? Latency-aware routing requires tracking rolling p95 latencies per provider. That's another table, more writes, more reads. For the assignment scope, cost routing gives a more concrete demo story. A real deployment would layer latency into the cost calculation.
 
-### Caching: Temperature Threshold at 0.3
+### Caching: Temperature Threshold at 0.3, Tenant-Scoped Keys
 
 Requests with `temperature <= 0.3` are treated as "sufficiently deterministic" to cache. This is a deliberate simplification — temperature 0 is fully deterministic; temperature 0.3 occasionally produces different outputs. The TTL (1 hour by default) further bounds the staleness risk.
+
+Cache keys are tenant-scoped: `sha256(tenant_id + model + messages + temperature + max_tokens)`. Two tenants sending identical prompts get separate cache entries. This trades hit rate for isolation: a tenant cannot observe another tenant's prompts via cache-hit latency timing, and per-tenant config (provider allowlist, model restrictions) is correctly honored.
 
 What we do NOT cache: streaming responses. Replaying a cached stream would require buffering the entire response and replaying the SSE chunks, which adds complexity for limited benefit. A client asking for a streaming response probably wants real-time token delivery, not a buffered replay.
 
 The cache invalidation strategy is TTL-only. There is no explicit invalidation path. This is correct for deterministic completions — if the model version changes (i.e., the provider deploys a new version behind the same model name), cached responses could become inconsistent. This is a known limitation documented in failure modes.
+
+### Failover: Same-Request Across Providers
+
+When the primary provider fails with a 5xx, network error, or timeout, the gateway tries the next candidate within the same request — without waiting for the circuit breaker to trip on threshold. The Router returns an ordered list of candidates (CostRouter sorts by estimated cost; FailoverRouter by configured priority), and the route handler walks the list. Each failed attempt records a circuit-breaker failure, so repeated bad-provider days eventually short-circuit the candidate list entirely.
+
+Client-error responses (400, 401, 403, 404) abort the walk — they won't succeed on a different provider either. Only 429 and 5xx/network errors trigger failover.
+
+Streaming is exempt from same-request failover. Replaying SSE chunks across providers requires buffering the entire stream first, which defeats streaming. Streams still benefit from circuit-breaker failover on the next request and from the per-stream watchdogs described below.
+
+### Streaming Watchdogs: First-Token and Inter-Chunk
+
+Two timeouts protect the streaming path:
+
+1. **First-token timeout** (`STREAM_FIRST_TOKEN_TIMEOUT_MS`, default 5s). Enforced in the provider adapter via `AbortController`. If the upstream doesn't begin streaming within this window, the request is aborted.
+
+2. **Inter-chunk idle timeout** (`STREAM_IDLE_TIMEOUT_MS`, default 10s). Enforced in the route handler via `Promise.race` between the next chunk read and a timer. If a provider stalls after first token, this catches it; without this, a slow-trickle provider could hold the gateway connection open indefinitely.
+
+When either fires, the existing partial-response handling kicks in: client receives `data: [PARTIAL]\n\n` if any tokens had flushed, the circuit breaker records a failure, and the connection closes cleanly.
 
 ### Resilience: Circuit Breaker per Provider
 
@@ -170,6 +190,12 @@ The circuit breaker is a three-state machine: CLOSED (normal), OPEN (rejecting r
 Why not a simple failure counter with backoff? Circuit breakers are the correct primitive here because they protect the downstream provider from being hammered while sick. A simple counter with retry doesn't prevent other requests from also failing while the provider is down. The circuit breaker stops new requests from reaching a known-bad provider, not just one request.
 
 The per-provider granularity is important. A Groq outage should not affect Cerebras traffic. A global circuit breaker would conflate independent failure domains.
+
+### Observability: Every Outcome Counted, Metrics Authenticated
+
+Every `/v1/chat/completions` request writes one row to the `requests` table at the end of its lifecycle, regardless of outcome. The previous design only logged from the chat handler, so middleware-rejected requests (429 rate-limited, 402 budget-exceeded) never showed up in `/metrics` — request rate and error rate were silently undercounted. Now the rate-limit and budget middleware call the same `logRequest()` helper before sending their response. Auth failures (401) are deliberately not persisted: they have no tenant to attribute to (the FK requires one) and they're attacker noise, not tenant usage.
+
+`/metrics` requires authentication. A tenant Bearer token returns metrics scoped to that tenant only — cross-tenant queries return 403. An admin `X-Admin-Key` can query any tenant or omit `?tenant=` for an aggregate view across all tenants. Previously this endpoint had no auth at all, which was a material multi-tenant isolation failure (any unauthenticated caller could read every tenant's spend and request counts).
 
 ### Providers: Groq + Cerebras (not Anthropic + OpenAI)
 
