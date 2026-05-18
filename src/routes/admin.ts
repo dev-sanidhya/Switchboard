@@ -103,6 +103,25 @@ export async function adminRoutes(fastify: FastifyInstance) {
     return reply.send({ ...tenant, limits });
   });
 
+  // List API keys for a tenant (hashes only — raw keys are never stored)
+  fastify.get("/admin/tenants/:id/keys", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, id) });
+    if (!tenant) return reply.code(404).send({ error: "Tenant not found" });
+
+    const keys = await db
+      .select({
+        id: apiKeys.id,
+        label: apiKeys.label,
+        createdAt: apiKeys.createdAt,
+        revokedAt: apiKeys.revokedAt,
+      })
+      .from(apiKeys)
+      .where(eq(apiKeys.tenantId, id));
+
+    return reply.send(keys);
+  });
+
   // Issue a new API key for an existing tenant
   fastify.post("/admin/tenants/:id/keys", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -123,5 +142,28 @@ export async function adminRoutes(fastify: FastifyInstance) {
     });
 
     return reply.code(201).send({ api_key: rawKey });
+  });
+
+  // Revoke an API key (soft-delete: sets revoked_at, auth middleware rejects it)
+  fastify.delete("/admin/tenants/:id/keys/:keyId", async (req, reply) => {
+    const { id, keyId } = req.params as { id: string; keyId: string };
+
+    const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, id) });
+    if (!tenant) return reply.code(404).send({ error: "Tenant not found" });
+
+    const key = await db.query.apiKeys.findFirst({ where: eq(apiKeys.id, keyId) });
+    if (!key || key.tenantId !== id) {
+      return reply.code(404).send({ error: "API key not found" });
+    }
+    if (key.revokedAt) {
+      return reply.code(409).send({ error: "API key already revoked", revoked_at: key.revokedAt });
+    }
+
+    await db
+      .update(apiKeys)
+      .set({ revokedAt: new Date() })
+      .where(eq(apiKeys.id, keyId));
+
+    return reply.code(200).send({ revoked: true, key_id: keyId });
   });
 }
