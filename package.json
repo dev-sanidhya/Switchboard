@@ -2,6 +2,7 @@
   "name": "switchboard",
   "version": "0.1.0",
   "description": "Multi-tenant LLM gateway",
+  "type": "module",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
