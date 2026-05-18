@@ -133,9 +133,15 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? estimateCost(spec, response.usage.prompt_tokens, response.usage.completion_tokens)
         : 0;
 
-      // Only deduct budget when we actually consumed tokens
+      // Atomically deduct budget. Log warning if concurrent requests raced the cap.
       if (costUsd > 0) {
-        await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+        const { overBudget } = await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+        if (overBudget) {
+          log.warn(
+            { event: "budget_race", tenantId: ctx.tenant.id, cost_usd: costUsd },
+            "Budget cap exceeded by concurrent request; cost already incurred at provider",
+          );
+        }
       }
 
       await logRequest({
@@ -270,9 +276,15 @@ async function handleStream(
     );
     const costUsd = spec ? estimateCost(spec, inputTokens, outputTokens) : 0;
 
-    // Only deduct when tokens were actually consumed
+    // Atomically deduct when tokens were actually consumed
     if (costUsd > 0 && (outputTokens > 0 || !abortedMidStream)) {
-      await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+      const { overBudget } = await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+      if (overBudget) {
+        log.warn(
+          { event: "budget_race", tenantId: ctx.tenant.id, cost_usd: costUsd },
+          "Budget cap exceeded by concurrent streaming request",
+        );
+      }
     }
 
     await logRequest({
