@@ -14,20 +14,39 @@ import { requests } from "../db/schema.js";
 import { generateTraceId, generateId } from "../observability/tracer.js";
 import { requestLogger } from "../observability/logger.js";
 
+// Rough token estimate: 1 token ~= 4 chars
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
 const chatBodySchema = z.object({
   model: z.string(),
   messages: z.array(
     z.object({
       role: z.enum(["system", "user", "assistant"]),
-      content: z.string(),
+      content: z.string().max(100_000, "Single message content exceeds 100k characters"),
     })
-  ),
+  ).max(100, "Too many messages"),
   temperature: z.number().min(0).max(2).optional(),
-  max_tokens: z.number().int().positive().optional(),
+  max_tokens: z.number().int().positive().max(8192).optional(),
   stream: z.boolean().optional().default(false),
 });
 
 export async function chatRoutes(fastify: FastifyInstance) {
+  // 512KB body limit - reject oversized prompts at the boundary
+  fastify.addContentTypeParser(
+    "application/json",
+    { parseAs: "string", bodyLimit: 512 * 1024 },
+    (req, body, done) => {
+      try {
+        done(null, JSON.parse(body as string));
+      } catch (err: any) {
+        err.statusCode = 400;
+        done(err, undefined);
+      }
+    }
+  );
+
   fastify.post("/v1/chat/completions", async (req, reply) => {
     const traceId = generateTraceId();
     reply.header("x-trace-id", traceId);
@@ -40,16 +59,19 @@ export async function chatRoutes(fastify: FastifyInstance) {
     await budgetMiddleware(req, reply);
     if (reply.sent) return;
 
-    const parsed = chatBodySchema.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: "Invalid request body", details: parsed.error.flatten() });
-    }
-
-    const body = parsed.data;
     const ctx = req.tenantCtx!;
     const log = requestLogger(traceId, ctx.tenant.id);
 
-    // Cache check (non-streaming only)
+    const parsed = chatBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "Invalid request body", trace_id: traceId, details: parsed.error.flatten() });
+    }
+
+    const body = parsed.data;
+
+    // Cache check (non-streaming, deterministic requests only)
     if (!body.stream && isCacheable(body)) {
       const key = cacheKey(body);
       const cached = getCached(key);
@@ -84,14 +106,14 @@ export async function chatRoutes(fastify: FastifyInstance) {
         traceId, tenantId: ctx.tenant.id, requestedModel: body.model,
         status: "error", errorCode: "NO_ELIGIBLE_PROVIDER", streaming: body.stream,
       });
-      return reply.code(503).send({ error: "No eligible provider available" });
+      return reply.code(503).send({ error: "No eligible provider available", trace_id: traceId });
     }
 
     const adapter = getAdapter(route.provider);
     const start = Date.now();
 
     if (body.stream) {
-      return handleStream(fastify, req, reply, { body, route, adapter, ctx, traceId, log, start });
+      return handleStream(req, reply, { body, route, adapter, ctx, traceId, log, start });
     }
 
     // Non-streaming path
@@ -111,7 +133,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
         ? estimateCost(spec, response.usage.prompt_tokens, response.usage.completion_tokens)
         : 0;
 
-      await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+      // Only deduct budget when we actually consumed tokens
+      if (costUsd > 0) {
+        await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+      }
 
       await logRequest({
         traceId,
@@ -133,7 +158,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
         "Request complete"
       );
 
-      // Cache successful response
       if (isCacheable(body)) {
         setCached(cacheKey(body), response);
       }
@@ -142,7 +166,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
     } catch (err: any) {
       await recordFailure(route.provider);
       const latencyMs = Date.now() - start;
-      const status = err?.statusCode === 408 || err?.name === "AbortError" ? "timeout" : "error";
+      const status =
+        err?.name === "AbortError" || err?.code === "UND_ERR_CONNECT_TIMEOUT"
+          ? "timeout"
+          : "error";
 
       await logRequest({
         traceId,
@@ -158,14 +185,16 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
       log.error({ provider: route.provider, error: err.message, status }, "Request failed");
 
-      const code = err?.statusCode >= 400 && err?.statusCode < 500 ? err.statusCode : 502;
-      return reply.code(code).send({ error: err.message ?? "Upstream provider error" });
+      const httpCode =
+        err?.statusCode >= 400 && err?.statusCode < 500 ? err.statusCode : 502;
+      return reply
+        .code(httpCode)
+        .send({ error: err.message ?? "Upstream provider error", trace_id: traceId });
     }
   });
 }
 
 async function handleStream(
-  fastify: FastifyInstance,
   req: any,
   reply: any,
   opts: { body: any; route: any; adapter: any; ctx: any; traceId: string; log: any; start: number }
@@ -179,9 +208,14 @@ async function handleStream(
     "x-trace-id": traceId,
   });
 
-  let tokensFlushed = 0;
-  let inputTokens = 0;
+  // Estimate input tokens up front from the messages (same approach as cost router)
+  const inputTokens = body.messages.reduce(
+    (sum: number, m: { content: string }) => sum + estimateTokens(m.content),
+    0
+  );
+
   let outputTokens = 0;
+  let tokensFlushed = 0;
   let ttfbMs: number | null = null;
   let abortedMidStream = false;
 
@@ -195,7 +229,7 @@ async function handleStream(
 
       const content = chunk.choices[0]?.delta?.content ?? "";
       if (content) {
-        outputTokens += Math.ceil(content.length / 4);
+        outputTokens += estimateTokens(content);
         tokensFlushed++;
       }
 
@@ -212,9 +246,13 @@ async function handleStream(
     abortedMidStream = tokensFlushed > 0;
 
     if (abortedMidStream) {
-      // Partial response: notify client cleanly instead of dropping connection
       log.warn(
-        { provider: route.provider, tokens_flushed: tokensFlushed, error: err.message, event: "upstream_abort" },
+        {
+          provider: route.provider,
+          tokens_flushed: tokensFlushed,
+          error: err.message,
+          event: "upstream_abort",
+        },
         "Upstream dropped mid-stream, flushing partial response"
       );
       reply.raw.write("data: [PARTIAL]\n\n");
@@ -230,7 +268,10 @@ async function handleStream(
     );
     const costUsd = spec ? estimateCost(spec, inputTokens, outputTokens) : 0;
 
-    await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+    // Only deduct when tokens were actually consumed
+    if (costUsd > 0 && (outputTokens > 0 || !abortedMidStream)) {
+      await deductBudget(ctx.tenant.id, ctx.limits.id, costUsd);
+    }
 
     await logRequest({
       traceId,
@@ -287,6 +328,6 @@ async function logRequest(data: {
       createdAt: new Date(),
     });
   } catch {
-    // Non-fatal: don't fail the request if logging fails
+    // Non-fatal: logging failure must not affect the request
   }
 }
