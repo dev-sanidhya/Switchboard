@@ -6,8 +6,8 @@ import { isOpen } from "../resilience/circuit-breaker.js";
 import { listProviders } from "../providers/registry.js";
 
 // Failover router: tries providers in order of preference, skips those with open circuits.
-// Priority: groq first, then gemini.
-const PROVIDER_PRIORITY = ["groq", "gemini"];
+// Priority: groq first (fastest), cerebras second, gemini third (if configured).
+const PROVIDER_PRIORITY = ["groq", "cerebras", "gemini"];
 
 export class FailoverRouter implements Router {
   async route(req: ChatRequest, limits: TenantLimits): Promise<RouteResult> {

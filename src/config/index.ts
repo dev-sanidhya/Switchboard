@@ -8,6 +8,7 @@ const schema = z.object({
   DATABASE_URL: z.string().default("./switchboard.db"),
 
   GROQ_API_KEY: z.string().min(1, "GROQ_API_KEY is required"),
+  CEREBRAS_API_KEY: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
 
   CACHE_TTL_SECONDS: z.coerce.number().default(3600),

@@ -1,20 +1,24 @@
 import { GroqAdapter } from "./groq.js";
+import { CerebrasAdapter } from "./cerebras.js";
 import { GeminiAdapter } from "./gemini.js";
 import { MockAdapter } from "./mock.js";
 import type { ProviderAdapter } from "./types.js";
 
 const groq = new GroqAdapter();
+const cerebras = new CerebrasAdapter();
 const gemini = new GeminiAdapter();
 
 // Mock adapters sit alongside real ones. When activated via /test/inject-failure,
 // the registry returns the mock instead of the real adapter.
 const mocks: Record<string, MockAdapter> = {
   groq: new MockAdapter("groq"),
+  cerebras: new MockAdapter("cerebras"),
   gemini: new MockAdapter("gemini"),
 };
 
 const real: Record<string, ProviderAdapter> = {
   groq,
+  cerebras,
   gemini,
 };
 

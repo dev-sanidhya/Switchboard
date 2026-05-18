@@ -58,6 +58,7 @@ export interface ModelSpec {
 }
 
 export const MODEL_REGISTRY: ModelSpec[] = [
+  // Groq - LPU inference, extremely low latency
   {
     provider: "groq",
     modelId: "llama-3.1-8b-instant",
@@ -67,10 +68,10 @@ export const MODEL_REGISTRY: ModelSpec[] = [
   },
   {
     provider: "groq",
-    modelId: "mixtral-8x7b-32768",
+    modelId: "meta-llama/llama-4-scout-17b-16e-instruct",
     tier: "balanced",
-    pricing: { inputPer1k: 0.00024, outputPer1k: 0.00024 },
-    contextWindow: 32768,
+    pricing: { inputPer1k: 0.00011, outputPer1k: 0.00034 },
+    contextWindow: 131072,
   },
   {
     provider: "groq",
@@ -79,6 +80,22 @@ export const MODEL_REGISTRY: ModelSpec[] = [
     pricing: { inputPer1k: 0.00059, outputPer1k: 0.00079 },
     contextWindow: 128000,
   },
+  // Cerebras - wafer-scale inference, different speed/cost profile from Groq
+  {
+    provider: "cerebras",
+    modelId: "llama3.1-8b",
+    tier: "cheap",
+    pricing: { inputPer1k: 0.0001, outputPer1k: 0.0001 },
+    contextWindow: 8192,
+  },
+  {
+    provider: "cerebras",
+    modelId: "gpt-oss-120b",
+    tier: "best",
+    pricing: { inputPer1k: 0.0006, outputPer1k: 0.0006 },
+    contextWindow: 8192,
+  },
+  // Gemini - optional third provider (set GEMINI_API_KEY to enable)
   {
     provider: "gemini",
     modelId: "gemini-1.5-flash",
