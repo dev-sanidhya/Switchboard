@@ -6,6 +6,8 @@ import { eq } from "drizzle-orm";
 import { generateId } from "../observability/tracer.js";
 import { hashKey } from "../middleware/auth.js";
 import { randomBytes } from "crypto";
+import { config } from "../config/index.js";
+import { logger } from "../observability/logger.js";
 
 const createTenantSchema = z.object({
   name: z.string().min(1),
@@ -17,6 +19,21 @@ const createTenantSchema = z.object({
 });
 
 export async function adminRoutes(fastify: FastifyInstance) {
+  if (!config.ADMIN_API_KEY) {
+    logger.warn(
+      "ADMIN_API_KEY is not set — admin routes are unauthenticated. Set this in production.",
+    );
+  }
+
+  // Protect all admin routes when ADMIN_API_KEY is configured
+  fastify.addHook("preHandler", async (req, reply) => {
+    if (!config.ADMIN_API_KEY) return;
+    const provided = req.headers["x-admin-key"];
+    if (provided !== config.ADMIN_API_KEY) {
+      return reply.code(401).send({ error: "Missing or invalid X-Admin-Key header" });
+    }
+  });
+
   // Create tenant + initial API key
   fastify.post("/admin/tenants", async (req, reply) => {
     const parsed = createTenantSchema.safeParse(req.body);
