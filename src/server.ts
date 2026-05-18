@@ -7,8 +7,9 @@ import { metricsRoutes } from "./routes/metrics.js";
 import { healthRoutes } from "./routes/health.js";
 import { adminRoutes } from "./routes/admin.js";
 import { testRoutes } from "./routes/test.js";
-import { db } from "./db/client.js";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -16,13 +17,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function buildServer() {
   const fastify = Fastify({
-    logger: false, // Using pino directly for structured logs
+    logger: false,
     trustProxy: true,
   });
 
   await fastify.register(cors, { origin: false });
 
-  // Request lifecycle: assign trace ID, log on response
   fastify.addHook("onRequest", async (req) => {
     (req as any).startTime = Date.now();
   });
@@ -51,10 +51,9 @@ export async function buildServer() {
 }
 
 async function main() {
-  // Run migrations on startup
-  migrate(db, {
-    migrationsFolder: path.join(__dirname, "db", "migrations"),
-  });
+  const libsql = createClient({ url: `file:${config.DATABASE_URL}` });
+  const db = drizzle(libsql);
+  await migrate(db, { migrationsFolder: path.join(__dirname, "db", "migrations") });
   logger.info("Database migrations applied");
 
   const fastify = await buildServer();
@@ -62,12 +61,8 @@ async function main() {
   try {
     await fastify.listen({ port: config.PORT, host: "0.0.0.0" });
     logger.info(
-      {
-        port: config.PORT,
-        env: config.NODE_ENV,
-        test_endpoints: config.ENABLE_TEST_ENDPOINTS,
-      },
-      `Switchboard running`
+      { port: config.PORT, env: config.NODE_ENV, test_endpoints: config.ENABLE_TEST_ENDPOINTS },
+      "Switchboard running"
     );
   } catch (err) {
     logger.error(err, "Server failed to start");
